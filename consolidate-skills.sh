@@ -2,7 +2,8 @@
 
 set -u
 
-TARGET_SKILLS_DIR="${HOME}/.skills"
+DEFAULT_TARGET_SKILLS_DIR="${HOME}/.skills"
+TARGET_SKILLS_DIR="${SKILLS_DIR:-$DEFAULT_TARGET_SKILLS_DIR}"
 
 AGENT_NAMES=(
   "Claude Code"
@@ -26,6 +27,90 @@ AGENT_SKILL_DIRS=(
   "${HOME}/.antigravity/skills"
 )
 
+print_usage() {
+  cat <<EOF
+Usage: $(basename "$0") [--target PATH]
+
+Consolidate assistant skills into a single directory and symlink each assistant's
+skills path to that directory.
+
+Options:
+  -t, --target PATH     Target consolidated skills directory (default: ${DEFAULT_TARGET_SKILLS_DIR})
+      --skills-dir PATH Alias for --target
+  -h, --help            Show this help message
+
+Environment:
+  SKILLS_DIR            Default target directory if --target is not provided
+EOF
+}
+
+expand_home_path() {
+  local path="$1"
+
+  case "$path" in
+    "~")
+      printf "%s\n" "$HOME"
+      ;;
+    "~/"*)
+      printf "%s\n" "${HOME}/${path#~/}"
+      ;;
+    *)
+      printf "%s\n" "$path"
+      ;;
+  esac
+}
+
+parse_args() {
+  local positional_target=""
+  local option_value=""
+
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      -t|--target|--skills-dir)
+        if [[ "$#" -lt 2 ]]; then
+          echo "Error: ${1} requires a value."
+          print_usage
+          exit 1
+        fi
+        TARGET_SKILLS_DIR="$(expand_home_path "$2")"
+        shift 2
+        ;;
+      --target=*|--skills-dir=*)
+        option_value="${1#*=}"
+        TARGET_SKILLS_DIR="$(expand_home_path "$option_value")"
+        shift
+        ;;
+      -h|--help)
+        print_usage
+        exit 0
+        ;;
+      -*)
+        echo "Error: Unknown option '${1}'."
+        print_usage
+        exit 1
+        ;;
+      *)
+        if [[ -n "$positional_target" ]]; then
+          echo "Error: Too many positional arguments."
+          print_usage
+          exit 1
+        fi
+        positional_target="$1"
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -n "$positional_target" ]]; then
+    TARGET_SKILLS_DIR="$(expand_home_path "$positional_target")"
+  fi
+
+  if [[ -z "$TARGET_SKILLS_DIR" ]]; then
+    echo "Error: Target skills directory cannot be empty."
+    exit 1
+  fi
+}
+
 print_section() {
   printf "\n== %s ==\n" "$1"
 }
@@ -39,6 +124,20 @@ prompt_yes_no() {
     case "$answer" in
       [Yy]|[Yy][Ee][Ss]) return 0 ;;
       [Nn]|[Nn][Oo]|"") return 1 ;;
+      *) echo "Please answer y or n." ;;
+    esac
+  done
+}
+
+prompt_yes_no_default_yes() {
+  local prompt="$1"
+  local answer=""
+
+  while true; do
+    read -r -p "${prompt} [Y/n]: " answer
+    case "$answer" in
+      [Yy]|[Yy][Ee][Ss]|"") return 0 ;;
+      [Nn]|[Nn][Oo]) return 1 ;;
       *) echo "Please answer y or n." ;;
     esac
   done
@@ -146,6 +245,8 @@ main() {
   local agent_name=""
   local agent_skill_dir=""
 
+  parse_args "$@"
+
   ensure_target_directory
 
   for i in "${!AGENT_NAMES[@]}"; do
@@ -154,6 +255,11 @@ main() {
 
     print_section "${agent_name}"
     echo "Source: ${agent_skill_dir}"
+
+    if ! prompt_yes_no_default_yes "Process ${agent_name}?"; then
+      echo "Skipped ${agent_name} by user."
+      continue
+    fi
 
     if [[ ! -e "$agent_skill_dir" && ! -L "$agent_skill_dir" ]]; then
       echo "Directory does not exist. Skipping."
@@ -185,5 +291,4 @@ main() {
   print_section "Done"
   echo "Skill consolidation complete."
 }
-
 main "$@"
